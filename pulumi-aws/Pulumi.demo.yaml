@@ -2,16 +2,8 @@ encryptionsalt: v1:+Cq0sTEelk4=:v1:A+6YhwAEhgXEVaCK:i70CIy6dy6kKq6SfrW6/uIugnXxu
 config:
   aws:region: us-east-1
   aws:profile: demo
-  availabilityZones:
-    - us-east-1a
-    - us-east-1b
-    - us-east-1c
-    - us-east-1d
-    - us-east-1e
-    - us-east-1f
 
-  publicSubnetsCountPerVpc: 3
-  privateSubnetsCountPerVpc: 3
-  vpcCount: 1
+  desiredTotalSubnetPairCount: 3
+  vpcCount: 2
   vpcBaseAddress: '15.0.0.0' 
   vpcBitMaskLength: 16
