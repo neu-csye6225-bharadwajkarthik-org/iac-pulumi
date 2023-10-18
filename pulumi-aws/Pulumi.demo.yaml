@@ -1,9 +1,21 @@
 encryptionsalt: v1:+Cq0sTEelk4=:v1:A+6YhwAEhgXEVaCK:i70CIy6dy6kKq6SfrW6/uIugnXxuBw==
 config:
+# aws config
   aws:region: us-east-1
   aws:profile: demo
 
+# vpc,subnet config
   desiredTotalSubnetPairCount: 3
-  vpcCount: 2
+  vpcCount: 1
   vpcBaseAddress: '15.0.0.0' 
   vpcBitMaskLength: 16
+
+# EC2 config
+  APP_PORT: 8080
+  AMI_ID: ami-04b219be62e732976
+  EC2_KEY_PAIR: ec2-key-pair
+  INSTANCE_TYPE: t2.micro
+  DISABLE_API_TERMINATION: false
+  DELETE_ON_TERMINATION: true
+  ROOT_VOLUME_SIZE: 25
+  ROOT_VOLUME_TYPE: gp2
