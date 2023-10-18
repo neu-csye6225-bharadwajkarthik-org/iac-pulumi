@@ -43,7 +43,7 @@ const queryAvailabilityZonesAndProvisionResources = async(provisionResources) =>
          console.log(`inside else statement : availabilityZones.length = ${availabilityZones.length} , desiredTotalSubnetPairCount = ${desiredTotalSubnetPairCount}`);
          totalSubnetCount = 2*availabilityZones.length;
       }
-      await provisionResources(availabilityZones, totalSubnetCount);
+      provisionResources(availabilityZones, totalSubnetCount);
    }catch(e){
       console.log(`Error : ${e}`);
    }
