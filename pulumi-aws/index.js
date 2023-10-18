@@ -11,6 +11,20 @@ const vpcCount = defaultNamespaceConfig.getNumber('vpcCount');
 const vpcBaseAddress = defaultNamespaceConfig.require('vpcBaseAddress');
 const vpcBitMaskLength = defaultNamespaceConfig.getNumber('vpcBitMaskLength');
 const desiredTotalSubnetPairCount = defaultNamespaceConfig.getNumber('desiredTotalSubnetPairCount');
+const APP_PORT = defaultNamespaceConfig.getNumber('APP_PORT');
+const AMI_ID = defaultNamespaceConfig.require('AMI_ID');
+const ec2_key_pair = defaultNamespaceConfig.require('EC2_KEY_PAIR');
+const disableApiTermination = defaultNamespaceConfig.require('DISABLE_API_TERMINATION');
+const deleteOnTermination = defaultNamespaceConfig.require('DELETE_ON_TERMINATION');
+const rootVolumeSize = defaultNamespaceConfig.getNumber('ROOT_VOLUME_SIZE');
+const rootVolumeType = defaultNamespaceConfig.require('ROOT_VOLUME_TYPE');
+const instanceType = defaultNamespaceConfig.require('INSTANCE_TYPE');
+
+console.log('disableApiTermination = ', disableApiTermination);
+console.log('deleteOnTermination = ', deleteOnTermination);
+console.log('rootVolumeSize = ', rootVolumeSize);
+console.log('rootVolumeType = ', rootVolumeType);
+console.log('instanceType = ', instanceType);
 
 // extract inputs from variables in aws namespace
 const region = awsNamespaceConfig.get('region');
@@ -29,7 +43,7 @@ const queryAvailabilityZonesAndProvisionResources = async(provisionResources) =>
          console.log(`inside else statement : availabilityZones.length = ${availabilityZones.length} , desiredTotalSubnetPairCount = ${desiredTotalSubnetPairCount}`);
          totalSubnetCount = 2*availabilityZones.length;
       }
-      provisionResources(availabilityZones, totalSubnetCount);
+      await provisionResources(availabilityZones, totalSubnetCount);
    }catch(e){
       console.log(`Error : ${e}`);
    }
@@ -78,7 +92,7 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
    
       // create 'publicSubnetsCount' amount of public subnets
       // and attach them to the public route table
-
+      const publicSubnets = [];
       for (let j = 0; j < totalSubnetCount/2; j++) {
          const subnet = new aws.ec2.Subnet(`publicSubnet-${(j+1)}-vpc-${(i+1)}`, {
              cidrBlock: CIDRBlockProvider.generateSubnetCIDR(vpcBaseAddress, vpcBitMaskLength, i, j, totalSubnetBits),
@@ -87,6 +101,7 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
              mapPublicIpOnLaunch: true,  // Auto-assign public IP addresses
              tags: { Name: `publicSubnet-${(j+1)}-vpc-${(i+1)}` },
          });
+         publicSubnets.push(subnet.id);
          // Associate public subnet with the public route table
          const publicSubnetRouteTableAssociation = new aws.ec2.RouteTableAssociation(`publicSubnetRouteTableAssociation-vpc-${(i + 1)}-subnet-${(j + 1)}`, {
             subnetId: subnet.id,
@@ -99,6 +114,7 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
    
       // create 'privateSubnetsCount' amount of private subnets
       // and attach them to the private route table
+      const privateSubnets = [];
       for (let j = totalSubnetCount/2; j < totalSubnetCount; j++) {
          const subnet = new aws.ec2.Subnet(`privateSubnet-${(j - totalSubnetCount/2 + 1)}-vpc-${(i+1)}`, {
              cidrBlock: CIDRBlockProvider.generateSubnetCIDR(vpcBaseAddress, vpcBitMaskLength, i, j, totalSubnetBits),  // Non-overlapping CIDR blocks for private subnets
@@ -106,6 +122,7 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
              vpcId: vpc.id,
              tags: { Name: `privateSubnet-${(j - totalSubnetCount/2 + 1)}-vpc-${(i+1)}` },
          });
+         privateSubnets.push(subnet.id);
          // Associate private subnets with the private route table
          const privateSubnetRouteTableAssociation = new aws.ec2.RouteTableAssociation(`PrivateSubnetRouteTableAssociation-vpc-${(i+1)}-subnet-${(j - totalSubnetCount/2 + 1)}`, {
             subnetId: subnet.id,
@@ -115,7 +132,60 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
             },
         });
       }
+
+
+      const applicationSecurityGroup = new aws.ec2.SecurityGroup("application-security-group", {
+         vpcId: vpc.id,
+         ingress: [
+             {
+                 fromPort: 22,
+                 toPort: 22,
+                 protocol: "tcp",
+                 cidrBlocks: ["0.0.0.0/0"],
+                 ipv6CidrBlocks: ["::/0"],
+             },
+             {
+                 fromPort: 80,
+                 toPort: 80,
+                 protocol: "tcp",
+                 cidrBlocks: ["0.0.0.0/0"],
+                 ipv6CidrBlocks: ["::/0"],
+             },
+             {
+                 fromPort: 443,
+                 toPort: 443,
+                 protocol: "tcp",
+                 cidrBlocks: ["0.0.0.0/0"],
+                 ipv6CidrBlocks: ["::/0"],
+             },
+             {
+                 fromPort:  APP_PORT, 
+                 toPort:  APP_PORT,   
+                 protocol: "tcp",
+                 cidrBlocks: ["0.0.0.0/0"],
+                 ipv6CidrBlocks: ["::/0"],
+             },
+         ],
+      });
+     
+      const ec2 = new aws.ec2.Instance("myInstance", {
+         ami: AMI_ID, // Replace with your desired AMI ID
+         instanceType: instanceType,
+         vpcSecurityGroupIds: [applicationSecurityGroup.id],
+         subnetId: publicSubnets[0], // Choose a public subnet for your instance
+         disableApiTermination : disableApiTermination,
+         rootBlockDevice: {
+            volumeSize: rootVolumeSize,
+            volumeType: rootVolumeType,
+            deleteOnTermination: deleteOnTermination,
+         },
+         keyName: ec2_key_pair,
+         tags: {
+            Name: "WebappEC2",
+         },
+      });
    }
 }
+
 
 queryAvailabilityZonesAndProvisionResources(provisionResources);
