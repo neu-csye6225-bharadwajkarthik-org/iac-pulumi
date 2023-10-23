@@ -3,13 +3,23 @@ config:
   aws:region: us-east-1
   aws:profile: dev
 
+# vpc,subnet config
   desiredTotalSubnetPairCount: 3
   vpcCount: 1
   vpcBaseAddress: '15.0.0.0' 
   vpcBitMaskLength: 16
 
+# Application security group:
+  APPLICATION_SECURITY_GROUP_TAG: application-security-group
+  COMMON_INGRESS_PROTOCOL: 'tcp'
+  COMMON_INGRESS_IPV4_CIDR_BLOCK: "0.0.0.0/0"
+  COMMON_INGRESS_IPV6_CIDR_BLOCK: "::/0"
+  INGRESS_PORTS: "22,80,443,8080"
+
+# EC2 config
+  WEBAPP_EC2_TAG: WebappEC2
   APP_PORT: 8080
-  AMI_ID: ami-04b219be62e732976
+  AMI_ID: ami-00e075fd35d454c0e
   EC2_KEY_PAIR: ec2-key-pair
   INSTANCE_TYPE: t2.micro
   DISABLE_API_TERMINATION: false

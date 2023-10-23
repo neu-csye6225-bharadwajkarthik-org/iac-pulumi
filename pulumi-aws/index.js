@@ -133,42 +133,32 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
         });
       }
 
+      const ingress_ports = defaultNamespaceConfig.require('INGRESS_PORTS').split(',');
+      const common_ingress_protocol = defaultNamespaceConfig.require('COMMON_INGRESS_PROTOCOL');
+      const common_ingress_ipv4_cidr_block = defaultNamespaceConfig.require('COMMON_INGRESS_IPV4_CIDR_BLOCK');
+      const common_ingress_ipv6_cidr_block = defaultNamespaceConfig.require('COMMON_INGRESS_IPV6_CIDR_BLOCK');
 
-      const applicationSecurityGroup = new aws.ec2.SecurityGroup("application-security-group", {
+      const ingressRules = ingress_ports.map(port => ({
+         fromPort: port,
+         toPort: port,
+         protocol: common_ingress_protocol,
+         cidrBlocks: [common_ingress_ipv4_cidr_block],
+         ipv6CidrBlocks: [common_ingress_ipv6_cidr_block],
+     }));
+
+     const application_security_group_tag = defaultNamespaceConfig.require('APPLICATION_SECURITY_GROUP_TAG');
+
+      const applicationSecurityGroup = new aws.ec2.SecurityGroup(application_security_group_tag, {
          vpcId: vpc.id,
-         ingress: [
-             {
-                 fromPort: 22,
-                 toPort: 22,
-                 protocol: "tcp",
-                 cidrBlocks: ["0.0.0.0/0"],
-                 ipv6CidrBlocks: ["::/0"],
-             },
-             {
-                 fromPort: 80,
-                 toPort: 80,
-                 protocol: "tcp",
-                 cidrBlocks: ["0.0.0.0/0"],
-                 ipv6CidrBlocks: ["::/0"],
-             },
-             {
-                 fromPort: 443,
-                 toPort: 443,
-                 protocol: "tcp",
-                 cidrBlocks: ["0.0.0.0/0"],
-                 ipv6CidrBlocks: ["::/0"],
-             },
-             {
-                 fromPort:  APP_PORT, 
-                 toPort:  APP_PORT,   
-                 protocol: "tcp",
-                 cidrBlocks: ["0.0.0.0/0"],
-                 ipv6CidrBlocks: ["::/0"],
-             },
-         ],
+         ingress: ingressRules,
+         tags: {
+            Name: application_security_group_tag,
+         },
       });
      
-      const ec2 = new aws.ec2.Instance("myInstance", {
+      const webapp_ec2_tag = defaultNamespaceConfig.require('WEBAPP_EC2_TAG');
+
+      const ec2 = new aws.ec2.Instance(webapp_ec2_tag, {
          ami: AMI_ID, // Replace with your desired AMI ID
          instanceType: instanceType,
          vpcSecurityGroupIds: [applicationSecurityGroup.id],
@@ -181,7 +171,7 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
          },
          keyName: ec2_key_pair,
          tags: {
-            Name: "WebappEC2",
+            Name: webapp_ec2_tag,
          },
       });
    }
