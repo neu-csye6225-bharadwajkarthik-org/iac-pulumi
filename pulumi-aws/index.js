@@ -11,7 +11,6 @@ const vpcCount = defaultNamespaceConfig.getNumber('vpcCount');
 const vpcBaseAddress = defaultNamespaceConfig.require('vpcBaseAddress');
 const vpcBitMaskLength = defaultNamespaceConfig.getNumber('vpcBitMaskLength');
 const desiredTotalSubnetPairCount = defaultNamespaceConfig.getNumber('desiredTotalSubnetPairCount');
-const APP_PORT = defaultNamespaceConfig.getNumber('APP_PORT');
 const AMI_ID = defaultNamespaceConfig.require('AMI_ID');
 const ec2_key_pair = defaultNamespaceConfig.require('EC2_KEY_PAIR');
 const disableApiTermination = defaultNamespaceConfig.require('DISABLE_API_TERMINATION');
@@ -49,7 +48,7 @@ const queryAvailabilityZonesAndProvisionResources = async(provisionResources) =>
    }
 }
 
-const provisionResources = (availabilityZones, totalSubnetCount) => {
+const provisionResources = async(availabilityZones, totalSubnetCount) => {
 
    const totalSubnetBits = Math.ceil(Math.log2(totalSubnetCount));
    console.log(`Math.ceil(Math.log2(2*totalSubnetCount)) = ${Math.ceil(Math.log2(2*totalSubnetCount))}`)
@@ -57,6 +56,8 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
    
    for(let i = 0; i < vpcCount; i++){
       const vpc = new aws.ec2.Vpc(`vpc-${(i + 1)}`, {
+         enableDnsSupport: true,      // Enable DNS resolution
+         enableDnsHostnames: true,    // Enable DNS hostnames
          cidrBlock: CIDRBlockProvider.generateVpcCIDR(vpcBaseAddress, vpcBitMaskLength, i),
          tags: {
             Name: `vpc-${(i+1)}`,
@@ -133,31 +134,133 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
         });
       }
 
-      const ingress_ports = defaultNamespaceConfig.require('INGRESS_PORTS').split(',');
-      const common_ingress_protocol = defaultNamespaceConfig.require('COMMON_INGRESS_PROTOCOL');
-      const common_ingress_ipv4_cidr_block = defaultNamespaceConfig.require('COMMON_INGRESS_IPV4_CIDR_BLOCK');
-      const common_ingress_ipv6_cidr_block = defaultNamespaceConfig.require('COMMON_INGRESS_IPV6_CIDR_BLOCK');
+      const application_ingress_ports = defaultNamespaceConfig.require('APPLICATION_INGRESS_PORTS').split(',');
+      const application_ingress_protocol = defaultNamespaceConfig.require('APPLICATION_INGRESS_PROTOCOL');
+      const application_ingress_all_ipv4 = defaultNamespaceConfig.require('APPLICATION_INGRESS_ALL_IPV4');
+      const application_ingress_all_ipv6 = defaultNamespaceConfig.require('APPLICATION_INGRESS_ALL_IPV6');
 
-      const ingressRules = ingress_ports.map(port => ({
-         fromPort: port,
-         toPort: port,
-         protocol: common_ingress_protocol,
-         cidrBlocks: [common_ingress_ipv4_cidr_block],
-         ipv6CidrBlocks: [common_ingress_ipv6_cidr_block],
-     }));
+      const ingressRules = application_ingress_ports.map(application_ingress_port => ({
+         fromPort: application_ingress_port,
+         toPort: application_ingress_port,
+         protocol: application_ingress_protocol,
+         cidrBlocks: [application_ingress_all_ipv4],
+         ipv6CidrBlocks: [application_ingress_all_ipv6],
+      }));
 
-     const application_security_group_tag = defaultNamespaceConfig.require('APPLICATION_SECURITY_GROUP_TAG');
+      const application_egress_ports = defaultNamespaceConfig.require('APPLICATION_EGRESS_PORTS').split(',');
+      const application_egress_protocol = defaultNamespaceConfig.require('APPLICATION_EGRESS_PROTOCOL');
+      const application_egress_all_ipv4 = defaultNamespaceConfig.require('APPLICATION_EGRESS_ALL_IPV4');
+      const application_egress_all_ipv6 = defaultNamespaceConfig.require('APPLICATION_EGRESS_ALL_IPV6');
+
+      const egressRules = application_egress_ports.map(application_egress_port => ({
+         fromPort: application_egress_port,
+         toPort: application_egress_port,
+         protocol: application_egress_protocol,
+         cidrBlocks: [application_egress_all_ipv4],
+         ipv6CidrBlocks: [application_egress_all_ipv6],
+      }));
+
+      const application_security_group_tag = defaultNamespaceConfig.require('APPLICATION_SECURITY_GROUP_TAG');
 
       const applicationSecurityGroup = new aws.ec2.SecurityGroup(application_security_group_tag, {
+         description: "EC2 Security group for the application server",
          vpcId: vpc.id,
          ingress: ingressRules,
+         egress: egressRules,
          tags: {
             Name: application_security_group_tag,
          },
       });
-     
-      const webapp_ec2_tag = defaultNamespaceConfig.require('WEBAPP_EC2_TAG');
 
+      const database_security_group_tag = defaultNamespaceConfig.require('DATABASE_SECURITY_GROUP_TAG');
+      const database_ingress_protocol = defaultNamespaceConfig.require('DATABASE_INGRESS_PROTOCOL');
+      const database_ingress_port = defaultNamespaceConfig.getNumber('DATABASE_INGRESS_PORT');
+
+      applicationSecurityGroup.id.apply((id) => console.log(`applicationSecurityGroup.id for use in databaseSecurityGroup = ` + id));
+
+      const databaseSecurityGroup = new aws.ec2.SecurityGroup(database_security_group_tag, {
+         description: "EC2 Security group for the database server",
+         vpcId: vpc.id,
+         ingress: [{
+             description: "Ingress rules for TCP Traffic inbound on database server",
+             fromPort: database_ingress_port,
+             toPort: database_ingress_port,
+             protocol: database_ingress_protocol,
+             securityGroups : [applicationSecurityGroup.id]
+         }],
+         tags: {
+             Name: database_security_group_tag,
+         },
+      },{ dependsOn: [applicationSecurityGroup] });
+
+      const database_family = defaultNamespaceConfig.require('DATABASE_FAMILY');
+      const rds_parameter_group_tag = defaultNamespaceConfig.require('RDS_PARAMETER_GROUP_TAG');
+
+      const rds_parameter_group = new aws.rds.ParameterGroup(rds_parameter_group_tag, {
+         family: database_family,
+         tags: {
+            Name: rds_parameter_group_tag,
+         },
+      });
+
+      const rds_subnet_group_tag = defaultNamespaceConfig.require('RDS_SUBNET_GROUP_TAG');
+      const rds_subnet_group = new aws.rds.SubnetGroup(rds_subnet_group_tag, {
+         subnetIds: [
+             privateSubnets[0], // need to make private after dev
+             privateSubnets[1]
+         ],
+         tags: {
+             Name: rds_subnet_group_tag,
+         },
+     });
+
+      const rds_instance_tag = defaultNamespaceConfig.require('RDS_INSTANCE_TAG');
+      const db_engine = defaultNamespaceConfig.require('DATABASE_ENGINE');
+      const db_engine_version = defaultNamespaceConfig.require('DATABASE_ENGINE_VERSION');
+      const db_instance_class = defaultNamespaceConfig.require('DATABASE_INSTANCE_CLASS');
+      const database_instance_identifier = defaultNamespaceConfig.require('DATABASE_INSTANCE_IDENTIFIER');
+      const database_allocated_storage = defaultNamespaceConfig.getNumber('DATABASE_ALLOCATED_STORAGE');
+
+      databaseSecurityGroup.id.apply((id) => console.log(`databaseSecurityGroup.id for use in rds_instance = ` + id));
+      rds_parameter_group.name.apply((name) => console.log(`rds_parameter_group.name for use in rds_instance = ` + name));
+      rds_subnet_group.name.apply((name) => console.log(`rds_subnet_group.name for use in rds_instance = ` + name));
+      
+      const rds_instance = new aws.rds.Instance(rds_instance_tag, {
+         allocatedStorage: database_allocated_storage,
+         dbName: process.env['DB_NAME'],
+         engine: db_engine,
+         engineVersion: db_engine_version,
+         instanceClass: db_instance_class,
+         parameterGroupName: rds_parameter_group.name,
+         username:process.env['DB_USERNAME'],
+         password: process.env['DB_PASSWORD'],
+         dbSubnetGroupName: rds_subnet_group.name,
+         multiAz: false,
+         identifier: database_instance_identifier,
+         publiclyAccessible: false, // need to make false
+         skipFinalSnapshot: true,
+         vpcSecurityGroupIds: [databaseSecurityGroup.id],
+         tags: {
+            Name: rds_instance_tag,
+         },
+      }, { dependsOn: [rds_subnet_group,databaseSecurityGroup,rds_parameter_group] });
+
+      rds_instance.address.apply((address) => console.log(`rds_instance address = ` + address));
+      rds_instance.endpoint.apply((endpoint) => console.log(`rds_instance endpoint = ` + endpoint));
+   
+      const webapp_ec2_tag = defaultNamespaceConfig.require('WEBAPP_EC2_TAG');
+      const USERS_CSV_PATH = defaultNamespaceConfig.require('USERS_CSV_PATH');
+      const WEBAPP_PATH = defaultNamespaceConfig.require('WEBAPP_PATH');
+      console.log(`Reading process.env vars: 
+      process.env['DB_NAME'] = ${process.env['DB_NAME']}
+      process.env['DB_USERNAME'] = ${process.env['DB_USERNAME']}
+      process.env['DB_PASSWORD'] = ${process.env['DB_PASSWORD']}
+      process.env['DB_DIALECT'] = ${process.env['DB_DIALECT']}
+      process.env['HOST'] = ${process.env['HOST']}
+      process.env['DB_POOL_MIN'] = ${process.env['DB_POOL_MIN']}
+      process.env['DB_POOL_MAX'] = ${process.env['DB_POOL_MAX']}
+      process.env['DB_POOL_IDLE'] = ${process.env['DB_POOL_IDLE']}
+      process.env['DB_POOL_ACQUIRE'] = ${process.env['DB_POOL_ACQUIRE']}`)
       const ec2 = new aws.ec2.Instance(webapp_ec2_tag, {
          ami: AMI_ID, // Replace with your desired AMI ID
          instanceType: instanceType,
@@ -170,10 +273,37 @@ const provisionResources = (availabilityZones, totalSubnetCount) => {
             deleteOnTermination: deleteOnTermination,
          },
          keyName: ec2_key_pair,
+
+         userData:pulumi.interpolate`#!/bin/bash
+         echo "# App configurations" > .env
+         echo "APP_PORT=${process.env['APP_PORT']}" >> .env
+         echo "" >> .env
+         echo "# DB Configurations" >> .env
+         echo "DB=${process.env['DB_NAME']}" >> .env
+         echo "HOST=${rds_instance.address}" >> .env
+         echo "DB_USERNAME=${process.env['DB_USERNAME']}" >> .env
+         echo "DB_PASSWORD=${process.env['DB_PASSWORD']}" >> .env
+         echo "DB_DIALECT=${process.env['DB_DIALECT']}" >> .env
+         echo "DB_POOL_MIN=${process.env['DB_POOL_MIN']}" >> .env
+         echo "DB_POOL_MAX=${process.env['DB_POOL_MAX']}" >> .env
+         echo "DB_POOL_ACQUIRE=${process.env['DB_POOL_ACQUIRE']}" >> .env
+         echo "DB_POOL_IDLE=${process.env['DB_POOL_IDLE']}" >> .env
+         echo "" >> .env
+         echo "# Files" >> .env
+         echo "USERS_CSV_PATH=${USERS_CSV_PATH}" >> .env
+         
+         sudo mv .env ${WEBAPP_PATH}
+
+         # Change the ownership of the .env file to a specific user and group
+         sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
+         `,
+
+         userDataReplaceOnChange: true,
+
          tags: {
             Name: webapp_ec2_tag,
          },
-      });
+      },{ dependsOn: [rds_instance] });
    }
 }
 
