@@ -43,7 +43,7 @@ config:
 
 # EC2 config
   WEBAPP_EC2_TAG: WebappEC2
-  AMI_ID: ami-05b67c98b41ed19d5
+  AMI_ID: ami-08ac07c56fe09cc5e
   EC2_KEY_PAIR: ec2-key-pair
   INSTANCE_TYPE: t2.micro
   DISABLE_API_TERMINATION: false
