@@ -296,6 +296,8 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
 
          # Change the ownership of the .env file to a specific user and group
          sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
+         # Change the permissions of the .env file
+         sudo chmod 755 ${WEBAPP_PATH}/.env
          `,
 
          userDataReplaceOnChange: true,
