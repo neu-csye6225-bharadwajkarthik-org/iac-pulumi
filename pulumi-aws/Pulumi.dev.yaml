@@ -1,5 +1,6 @@
 encryptionsalt: v1:y4FcYj8FmzI=:v1:HyKgwoC/4Flnogzy:gFZPuvDKkNcuy5n5RSGeUXM55jdo1Q==
 config:
+# aws config
   aws:region: us-east-1
   aws:profile: dev
 
@@ -11,19 +12,45 @@ config:
 
 # Application security group:
   APPLICATION_SECURITY_GROUP_TAG: application-security-group
-  COMMON_INGRESS_PROTOCOL: 'tcp'
-  COMMON_INGRESS_IPV4_CIDR_BLOCK: "0.0.0.0/0"
-  COMMON_INGRESS_IPV6_CIDR_BLOCK: "::/0"
-  INGRESS_PORTS: "22,80,443,8080"
+  APPLICATION_INGRESS_PROTOCOL: tcp
+  APPLICATION_INGRESS_ALL_IPV4: "0.0.0.0/0"
+  APPLICATION_INGRESS_ALL_IPV6: "::/0"
+  APPLICATION_INGRESS_PORTS: "22,80,443,8080"
+  APPLICATION_EGRESS_PROTOCOL: "-1"
+  APPLICATION_EGRESS_ALL_IPV4: "0.0.0.0/0"
+  APPLICATION_EGRESS_ALL_IPV6: "::/0"
+  APPLICATION_EGRESS_PORTS: "0"
+
+# Database security group:
+  DATABASE_SECURITY_GROUP_TAG: database-security-group
+  DATABASE_INGRESS_PROTOCOL: tcp
+  DATABASE_INGRESS_PORT: 3306
+
+# RDS parameter group config
+  RDS_PARAMETER_GROUP_TAG: rds-parameter-group
+  DATABASE_FAMILY: 'mariadb10.6'
+
+# RDS subnet group config
+  RDS_SUBNET_GROUP_TAG: rds-subnet-group
+
+# RDS instance config
+  RDS_INSTANCE_TAG: rds-instance
+  DATABASE_ENGINE: MariaDB
+  DATABASE_ALLOCATED_STORAGE: 20
+  DATABASE_ENGINE_VERSION: '10.6.14'
+  DATABASE_INSTANCE_CLASS: 'db.t2.micro'
+  DATABASE_INSTANCE_IDENTIFIER: csye6225
 
 # EC2 config
   WEBAPP_EC2_TAG: WebappEC2
-  APP_PORT: 8080
-  AMI_ID: ami-00e075fd35d454c0e
+  AMI_ID: ami-05b67c98b41ed19d5
   EC2_KEY_PAIR: ec2-key-pair
   INSTANCE_TYPE: t2.micro
   DISABLE_API_TERMINATION: false
   DELETE_ON_TERMINATION: true
   ROOT_VOLUME_SIZE: 25
   ROOT_VOLUME_TYPE: gp2
-  
+
+# Applicaton config
+  WEBAPP_PATH: /opt/csye6225/webapp
+  USERS_CSV_PATH: /opt/user.csv
