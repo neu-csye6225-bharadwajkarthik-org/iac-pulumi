@@ -172,6 +172,38 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
          },
       });
 
+      // Create an IAM role with for EC2 to assume
+      const cloudwatchAccessRole = new aws.iam.Role('EC2CloudwatchAccess', {
+         name: 'EC2CloudwatchAccess', // Specify a custom name for the IAM role
+         assumeRolePolicy: JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [
+               {
+                     Action: 'sts:AssumeRole',
+                     Effect: 'Allow',
+                     Principal: {
+                        Service: 'ec2.amazonaws.com',
+                     },
+               },
+            ],
+         }),
+         tags: {
+            roleName: 'EC2CloudwatchAccess'
+         } 
+      });
+
+      // Attach - 'CloudWatchServerAgentPolicy'-  IAM policy to the custom - 'cloudwatchAccessRole' - IAM role created above
+      const policyAttachment = new aws.iam.PolicyAttachment('cloudwatch-agent-policy-attachment', {
+         roles: [cloudwatchAccessRole.name],
+         policyArn: 'arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy',
+      }); 
+
+      // Create an instance profile for this role
+      const cloudWatchAccessInstanceProfile = new aws.iam.InstanceProfile('EC2CloudwatchAccessInstanceProfile', {
+         name: 'EC2CloudwatchAccessInstanceProfile', 
+         role: cloudwatchAccessRole.name, // Associate the IAM role with the instance profile
+      });
+
       const database_security_group_tag = defaultNamespaceConfig.require('DATABASE_SECURITY_GROUP_TAG');
       const database_ingress_protocol = defaultNamespaceConfig.require('DATABASE_INGRESS_PROTOCOL');
       const database_ingress_port = defaultNamespaceConfig.getNumber('DATABASE_INGRESS_PORT');
@@ -220,6 +252,9 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       const db_instance_class = defaultNamespaceConfig.require('DATABASE_INSTANCE_CLASS');
       const database_instance_identifier = defaultNamespaceConfig.require('DATABASE_INSTANCE_IDENTIFIER');
       const database_allocated_storage = defaultNamespaceConfig.getNumber('DATABASE_ALLOCATED_STORAGE');
+      const db_username = defaultNamespaceConfig.require('DATABASE_USERNAME');
+      const db_password = defaultNamespaceConfig.require('DATABASE_PASSWORD');
+      const db_name = defaultNamespaceConfig.require('DATABASE_NAME');
 
       databaseSecurityGroup.id.apply((id) => console.log(`databaseSecurityGroup.id for use in rds_instance = ` + id));
       rds_parameter_group.name.apply((name) => console.log(`rds_parameter_group.name for use in rds_instance = ` + name));
@@ -227,13 +262,13 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       
       const rds_instance = new aws.rds.Instance(rds_instance_tag, {
          allocatedStorage: database_allocated_storage,
-         dbName: process.env['DB_NAME'],
+         dbName: db_name,
          engine: db_engine,
          engineVersion: db_engine_version,
          instanceClass: db_instance_class,
          parameterGroupName: rds_parameter_group.name,
-         username:process.env['DB_USERNAME'],
-         password: process.env['DB_PASSWORD'],
+         username:db_username,
+         password: db_password,
          dbSubnetGroupName: rds_subnet_group.name,
          multiAz: false,
          identifier: database_instance_identifier,
@@ -249,18 +284,8 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       rds_instance.endpoint.apply((endpoint) => console.log(`rds_instance endpoint = ` + endpoint));
    
       const webapp_ec2_tag = defaultNamespaceConfig.require('WEBAPP_EC2_TAG');
-      const USERS_CSV_PATH = defaultNamespaceConfig.require('USERS_CSV_PATH');
       const WEBAPP_PATH = defaultNamespaceConfig.require('WEBAPP_PATH');
-      console.log(`Reading process.env vars: 
-      process.env['DB_NAME'] = ${process.env['DB_NAME']}
-      process.env['DB_USERNAME'] = ${process.env['DB_USERNAME']}
-      process.env['DB_PASSWORD'] = ${process.env['DB_PASSWORD']}
-      process.env['DB_DIALECT'] = ${process.env['DB_DIALECT']}
-      process.env['HOST'] = ${process.env['HOST']}
-      process.env['DB_POOL_MIN'] = ${process.env['DB_POOL_MIN']}
-      process.env['DB_POOL_MAX'] = ${process.env['DB_POOL_MAX']}
-      process.env['DB_POOL_IDLE'] = ${process.env['DB_POOL_IDLE']}
-      process.env['DB_POOL_ACQUIRE'] = ${process.env['DB_POOL_ACQUIRE']}`)
+      
       const ec2 = new aws.ec2.Instance(webapp_ec2_tag, {
          ami: AMI_ID, // Replace with your desired AMI ID
          instanceType: instanceType,
@@ -273,31 +298,31 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
             deleteOnTermination: deleteOnTermination,
          },
          keyName: ec2_key_pair,
+         iamInstanceProfile: cloudWatchAccessInstanceProfile.name,
 
          userData:pulumi.interpolate`#!/bin/bash
-         echo "# App configurations" > .env
-         echo "APP_PORT=${process.env['APP_PORT']}" >> .env
-         echo "" >> .env
-         echo "# DB Configurations" >> .env
-         echo "DB=${process.env['DB_NAME']}" >> .env
-         echo "HOST=${rds_instance.address}" >> .env
-         echo "DB_USERNAME=${process.env['DB_USERNAME']}" >> .env
-         echo "DB_PASSWORD=${process.env['DB_PASSWORD']}" >> .env
-         echo "DB_DIALECT=${process.env['DB_DIALECT']}" >> .env
-         echo "DB_POOL_MIN=${process.env['DB_POOL_MIN']}" >> .env
-         echo "DB_POOL_MAX=${process.env['DB_POOL_MAX']}" >> .env
-         echo "DB_POOL_ACQUIRE=${process.env['DB_POOL_ACQUIRE']}" >> .env
-         echo "DB_POOL_IDLE=${process.env['DB_POOL_IDLE']}" >> .env
-         echo "" >> .env
-         echo "# Files" >> .env
-         echo "USERS_CSV_PATH=${USERS_CSV_PATH}" >> .env
-         
-         sudo mv .env ${WEBAPP_PATH}
+
+         # Update the .env file with rds host value, user, pass, and db name
+         sed -i 's/HOST=.*/HOST=${rds_instance.address}/' ${WEBAPP_PATH}/.env
+         # Update the .env file with rds db name value
+         sed -i 's/DB=.*/DB=${db_name}/' ${WEBAPP_PATH}/.env
+         # Update the .env file with rds username value
+         sed -i 's/DB_USERNAME=.*/DB_USERNAME=${db_username}/' ${WEBAPP_PATH}/.env
+         # Update the .env file with rds password value
+         sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=${db_password}/' ${WEBAPP_PATH}/.env
 
          # Change the ownership of the .env file to a specific user and group
          sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
          # Change the permissions of the .env file
          sudo chmod 755 ${WEBAPP_PATH}/.env
+
+         # Execute cloudwatch agent with config file provisioned in known location through AMI
+         sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config \
+            -m ec2 \
+            -c file:/opt/csye6225/webapp/cloudwatch-config.json \
+            -s
+
          `,
 
          userDataReplaceOnChange: true,
@@ -306,6 +331,23 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
             Name: webapp_ec2_tag,
          },
       },{ dependsOn: [rds_instance] });
+
+      const hostedZoneId = defaultNamespaceConfig.require('HOSTED_ZONE_ID'); // Replace with your hosted zone ID
+      const subdomain = defaultNamespaceConfig.require('SUBDOMAIN'); // Replace with the subdomain you want to update
+      const recordName = defaultNamespaceConfig.require('A_RECORD_TAG');
+      const A_RECORD_TTL = defaultNamespaceConfig.getNumber('A_RECORD_TTL')
+      
+      console.log(hostedZoneId)
+      // Create an A record for the subdomain
+      const aRecord = new aws.route53.Record(recordName, {
+         name: subdomain,
+         zoneId: hostedZoneId,
+         type: 'A',
+         ttl: A_RECORD_TTL, 
+         records: [ec2.publicIp], 
+      });
+
+      
    }
 }
 
