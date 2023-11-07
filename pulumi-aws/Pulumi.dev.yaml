@@ -40,10 +40,13 @@ config:
   DATABASE_ENGINE_VERSION: '10.6.14'
   DATABASE_INSTANCE_CLASS: 'db.t2.micro'
   DATABASE_INSTANCE_IDENTIFIER: csye6225
+  DATABASE_NAME: csye6225
+  DATABASE_USERNAME: csye6225
+  DATABASE_PASSWORD: password
 
 # EC2 config
   WEBAPP_EC2_TAG: WebappEC2
-  AMI_ID: ami-08ac07c56fe09cc5e
+  AMI_ID: ami-0bb0e525a47b946c6
   EC2_KEY_PAIR: ec2-key-pair
   INSTANCE_TYPE: t2.micro
   DISABLE_API_TERMINATION: false
@@ -51,6 +54,11 @@ config:
   ROOT_VOLUME_SIZE: 25
   ROOT_VOLUME_TYPE: gp2
 
+# DNS config
+  HOSTED_ZONE_ID: Z005464311EAR2Z0VRQ9L
+  SUBDOMAIN: dev.cloudcsye6225.me
+  A_RECORD_TAG: dev-cloudcsye6225-me
+  A_RECORD_TTL: 60
+
 # Applicaton config
   WEBAPP_PATH: /opt/csye6225/webapp
-  USERS_CSV_PATH: /opt/user.csv
