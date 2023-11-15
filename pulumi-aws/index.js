@@ -1,6 +1,7 @@
 "use strict";
 const pulumi = require("@pulumi/pulumi");
 const aws = require("@pulumi/aws");
+// const cloud = require("@pulumi/cloud");
 const {CIDRBlockProvider} = require('./helpers');
 
 const defaultNamespaceConfig = new pulumi.Config();
@@ -11,19 +12,8 @@ const vpcCount = defaultNamespaceConfig.getNumber('vpcCount');
 const vpcBaseAddress = defaultNamespaceConfig.require('vpcBaseAddress');
 const vpcBitMaskLength = defaultNamespaceConfig.getNumber('vpcBitMaskLength');
 const desiredTotalSubnetPairCount = defaultNamespaceConfig.getNumber('desiredTotalSubnetPairCount');
-const AMI_ID = defaultNamespaceConfig.require('AMI_ID');
-const ec2_key_pair = defaultNamespaceConfig.require('EC2_KEY_PAIR');
-const disableApiTermination = defaultNamespaceConfig.require('DISABLE_API_TERMINATION');
-const deleteOnTermination = defaultNamespaceConfig.require('DELETE_ON_TERMINATION');
-const rootVolumeSize = defaultNamespaceConfig.getNumber('ROOT_VOLUME_SIZE');
-const rootVolumeType = defaultNamespaceConfig.require('ROOT_VOLUME_TYPE');
-const instanceType = defaultNamespaceConfig.require('INSTANCE_TYPE');
 
-console.log('disableApiTermination = ', disableApiTermination);
-console.log('deleteOnTermination = ', deleteOnTermination);
-console.log('rootVolumeSize = ', rootVolumeSize);
-console.log('rootVolumeType = ', rootVolumeType);
-console.log('instanceType = ', instanceType);
+
 
 // extract inputs from variables in aws namespace
 const region = awsNamespaceConfig.get('region');
@@ -134,17 +124,64 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
         });
       }
 
+      // ---------------------------------------LOAD BALANCER SECURITY GROUP ------------------------------------------------
+      const loadbalancer_ingress_ports = defaultNamespaceConfig.require('LOADBALANCER_INGRESS_PORTS').split(',');
+      const loadbalancer_ingress_protocol = defaultNamespaceConfig.require('LOADBALANCER_INGRESS_PROTOCOL');
+      const loadbalancer_ingress_all_ipv4 = defaultNamespaceConfig.require('LOADBALANCER_INGRESS_ALL_IPV4');
+      const loadbalancer_ingress_all_ipv6 = defaultNamespaceConfig.require('LOADBALANCER_INGRESS_ALL_IPV6');
+
+      const loadbalancer_ingressRules = loadbalancer_ingress_ports.map(loadbalancer_ingress_port => ({
+         fromPort: loadbalancer_ingress_port,
+         toPort: loadbalancer_ingress_port,
+         protocol: loadbalancer_ingress_protocol,
+         cidrBlocks: [loadbalancer_ingress_all_ipv4],
+         ipv6CidrBlocks: [loadbalancer_ingress_all_ipv6],
+      }));
+
+      const loadbalancer_egress_ports = defaultNamespaceConfig.require('LOADBALANCER_EGRESS_PORTS').split(',');
+      const loadbalancer_egress_protocol = defaultNamespaceConfig.require('LOADBALANCER_EGRESS_PROTOCOL');
+      const loadbalancer_egress_all_ipv4 = defaultNamespaceConfig.require('LOADBALANCER_EGRESS_ALL_IPV4');
+      const loadbalancer_egress_all_ipv6 = defaultNamespaceConfig.require('LOADBALANCER_EGRESS_ALL_IPV6');
+
+      const loadbalancer_egressRules = loadbalancer_egress_ports.map(loadbalancer_egress_port => ({
+         fromPort: loadbalancer_egress_port,
+         toPort: loadbalancer_egress_port,
+         protocol: loadbalancer_egress_protocol,
+         cidrBlocks: [loadbalancer_egress_all_ipv4],
+         ipv6CidrBlocks: [loadbalancer_egress_all_ipv6],
+      }));
+
+      const loadbalancer_security_group_tag = defaultNamespaceConfig.require('LOADBALANCER_SECURITY_GROUP_TAG');
+
+      const loadbalancerSecurityGroup = new aws.ec2.SecurityGroup(loadbalancer_security_group_tag, {
+         description: "Load Balancer Security group to use as source for application security group",
+         vpcId: vpc.id,
+         ingress: loadbalancer_ingressRules,
+         egress: loadbalancer_egressRules,
+         tags: {
+            Name: loadbalancer_security_group_tag,
+         },
+      });
+
+      // -------------------------END OF LOAD BALANCER SECURITY GROUP ----------------------------------------
+
+      // -------------------------APPLICATION SECURITY GROUP ----------------------------------------------------
       const application_ingress_ports = defaultNamespaceConfig.require('APPLICATION_INGRESS_PORTS').split(',');
       const application_ingress_protocol = defaultNamespaceConfig.require('APPLICATION_INGRESS_PROTOCOL');
       const application_ingress_all_ipv4 = defaultNamespaceConfig.require('APPLICATION_INGRESS_ALL_IPV4');
       const application_ingress_all_ipv6 = defaultNamespaceConfig.require('APPLICATION_INGRESS_ALL_IPV6');
 
-      const ingressRules = application_ingress_ports.map(application_ingress_port => ({
+      const application_ingressRules = application_ingress_ports.map(application_ingress_port => ({
          fromPort: application_ingress_port,
          toPort: application_ingress_port,
          protocol: application_ingress_protocol,
-         cidrBlocks: [application_ingress_all_ipv4],
-         ipv6CidrBlocks: [application_ingress_all_ipv6],
+         // Conditionally include 'loadbalancerSecurityGroup' as source for all traffic into app except for ssh which can come from internet
+         ...(Number(application_ingress_port) !== 22
+            ? { securityGroups: [loadbalancerSecurityGroup.id] }
+            : {
+               cidrBlocks: [application_ingress_all_ipv4],
+               ipv6CidrBlocks: [application_ingress_all_ipv6],
+               }),
       }));
 
       const application_egress_ports = defaultNamespaceConfig.require('APPLICATION_EGRESS_PORTS').split(',');
@@ -152,7 +189,7 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       const application_egress_all_ipv4 = defaultNamespaceConfig.require('APPLICATION_EGRESS_ALL_IPV4');
       const application_egress_all_ipv6 = defaultNamespaceConfig.require('APPLICATION_EGRESS_ALL_IPV6');
 
-      const egressRules = application_egress_ports.map(application_egress_port => ({
+      const application_egressRules = application_egress_ports.map(application_egress_port => ({
          fromPort: application_egress_port,
          toPort: application_egress_port,
          protocol: application_egress_protocol,
@@ -165,13 +202,16 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       const applicationSecurityGroup = new aws.ec2.SecurityGroup(application_security_group_tag, {
          description: "EC2 Security group for the application server",
          vpcId: vpc.id,
-         ingress: ingressRules,
-         egress: egressRules,
+         ingress: application_ingressRules,
+         egress: application_egressRules,
          tags: {
             Name: application_security_group_tag,
          },
       });
 
+      // --------------------------END OF APPLICATION SECURITY GROUP --------------------------------------------------
+
+      
       // Create an IAM role with for EC2 to assume
       const cloudwatchAccessRole = new aws.iam.Role('EC2CloudwatchAccess', {
          name: 'EC2CloudwatchAccess', // Specify a custom name for the IAM role
@@ -283,72 +323,407 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       rds_instance.address.apply((address) => console.log(`rds_instance address = ` + address));
       rds_instance.endpoint.apply((endpoint) => console.log(`rds_instance endpoint = ` + endpoint));
    
-      const webapp_ec2_tag = defaultNamespaceConfig.require('WEBAPP_EC2_TAG');
       const WEBAPP_PATH = defaultNamespaceConfig.require('WEBAPP_PATH');
-      
-      const ec2 = new aws.ec2.Instance(webapp_ec2_tag, {
-         ami: AMI_ID, // Replace with your desired AMI ID
+
+      // const webapp_ec2_tag = defaultNamespaceConfig.require('WEBAPP_EC2_TAG');   
+      // const AMI_ID = defaultNamespaceConfig.require('AMI_ID');
+      // const ec2_key_pair = defaultNamespaceConfig.require('EC2_KEY_PAIR');
+      // const disableApiTermination = defaultNamespaceConfig.require('DISABLE_API_TERMINATION');
+      // const deleteOnTermination = defaultNamespaceConfig.require('DELETE_ON_TERMINATION');
+      // const rootVolumeSize = defaultNamespaceConfig.getNumber('ROOT_VOLUME_SIZE');
+      // const rootVolumeType = defaultNamespaceConfig.require('ROOT_VOLUME_TYPE');
+      // const instanceType = defaultNamespaceConfig.require('INSTANCE_TYPE');
+
+      // console.log('disableApiTermination = ', disableApiTermination);
+      // console.log('deleteOnTermination = ', deleteOnTermination);
+      // console.log('rootVolumeSize = ', rootVolumeSize);
+      // console.log('rootVolumeType = ', rootVolumeType);
+      // console.log('instanceType = ', instanceType);
+
+      // ------------------------------------ EC2 --------------------------------------------
+
+      // const ec2 = new aws.ec2.Instance(webapp_ec2_tag, {
+      //    ami: AMI_ID, // Replace with your desired AMI ID
+      //    instanceType: instanceType,
+      //    vpcSecurityGroupIds: [applicationSecurityGroup.id],
+      //    subnetId: publicSubnets[0], // Choose a public subnet for your instance
+      //    disableApiTermination : disableApiTermination,
+      //    rootBlockDevice: {
+      //       volumeSize: rootVolumeSize,
+      //       volumeType: rootVolumeType,
+      //       deleteOnTermination: deleteOnTermination,
+      //    },
+      //    keyName: ec2_key_pair,
+      //    iamInstanceProfile: cloudWatchAccessInstanceProfile.name,
+
+      //    userData:pulumi.interpolate`#!/bin/bash
+
+      //    # Update the .env file with rds host value, user, pass, and db name
+      //    sed -i 's/HOST=.*/HOST=${rds_instance.address}/' ${WEBAPP_PATH}/.env
+      //    # Update the .env file with rds db name value
+      //    sed -i 's/DB=.*/DB=${db_name}/' ${WEBAPP_PATH}/.env
+      //    # Update the .env file with rds username value
+      //    sed -i 's/DB_USERNAME=.*/DB_USERNAME=${db_username}/' ${WEBAPP_PATH}/.env
+      //    # Update the .env file with rds password value
+      //    sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=${db_password}/' ${WEBAPP_PATH}/.env
+
+      //    # Change the ownership of the .env file to a specific user and group
+      //    sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
+      //    # Change the permissions of the .env file
+      //    sudo chmod 755 ${WEBAPP_PATH}/.env
+
+      //    # Execute cloudwatch agent with config file provisioned in known location through AMI
+      //    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+      //       -a fetch-config \
+      //       -m ec2 \
+      //       -c file:/opt/csye6225/webapp/cloudwatch-config.json \
+      //       -s
+
+      //    `,
+
+      //    userDataReplaceOnChange: true,
+
+      //    tags: {
+      //       Name: webapp_ec2_tag,
+      //    },
+      // },{ dependsOn: [rds_instance] });
+
+      // ------------------------------------ END OF EC2 --------------------------------------------
+
+      // --------------------------- START OF LAUNCH TEMPLATE ---------------------------------------
+
+      const WEBAPP_LAUNCH_TEMPLATE_TAG = defaultNamespaceConfig.require('WEBAPP_LAUNCH_TEMPLATE_TAG');   
+      const AMI_ID = defaultNamespaceConfig.require('AMI_ID');
+      const ec2_key_pair = defaultNamespaceConfig.require('EC2_KEY_PAIR');
+      const disableApiTermination = defaultNamespaceConfig.require('DISABLE_API_TERMINATION');
+      const deleteOnTermination = defaultNamespaceConfig.require('DELETE_ON_TERMINATION');
+      const rootVolumeSize = defaultNamespaceConfig.getNumber('ROOT_VOLUME_SIZE');
+      const rootVolumeType = defaultNamespaceConfig.require('ROOT_VOLUME_TYPE');
+      const instanceType = defaultNamespaceConfig.require('INSTANCE_TYPE');
+
+      console.log('disableApiTermination = ', disableApiTermination);
+      console.log('deleteOnTermination = ', deleteOnTermination);
+      console.log('rootVolumeSize = ', rootVolumeSize);
+      console.log('rootVolumeType = ', rootVolumeType);
+      console.log('instanceType = ', instanceType);
+
+      const userDataScript = pulumi.interpolate`#!/bin/bash
+      # Update the .env file with rds host value, user, pass, and db name
+      sed -i 's/HOST=.*/HOST=${rds_instance.address}/' ${WEBAPP_PATH}/.env
+      # Update the .env file with rds db name value
+      sed -i 's/DB=.*/DB=${db_name}/' ${WEBAPP_PATH}/.env
+      # Update the .env file with rds username value
+      sed -i 's/DB_USERNAME=.*/DB_USERNAME=${db_username}/' ${WEBAPP_PATH}/.env
+      # Update the .env file with rds password value
+      sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=${db_password}/' ${WEBAPP_PATH}/.env
+
+      # Change the ownership of the .env file to a specific user and group
+      sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
+      # Change the permissions of the .env file
+      sudo chmod 755 ${WEBAPP_PATH}/.env
+
+      # Execute cloudwatch agent with config file provisioned in known location through AMI
+      sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+         -a fetch-config \
+         -m ec2 \
+         -c file:/opt/csye6225/webapp/cloudwatch-config.json \
+         -s
+
+      `;
+
+      const launch_template = new aws.ec2.LaunchTemplate(WEBAPP_LAUNCH_TEMPLATE_TAG, {
+         blockDeviceMappings: [{
+             deviceName: "/dev/xvda",
+             ebs: {
+               volumeSize: rootVolumeSize,
+               volumeType: rootVolumeType,
+               deleteOnTermination: deleteOnTermination,
+             },
+         }],
+         // capacityReservationSpecification: {
+         //     capacityReservationPreference: "open",
+         // },
+         // cpuOptions: {
+         //     coreCount: 4,
+         //     threadsPerCore: 2,
+         // },
+         // creditSpecification: {
+         //     cpuCredits: "standard",
+         // },
+         disableApiTermination: disableApiTermination,
+         // ebsOptimized: "true",
+         // elasticGpuSpecifications: [{
+         //     type: "test",
+         // }],
+         // elasticInferenceAccelerator: {
+         //     type: "eia1.medium",
+         // },
+         iamInstanceProfile: {
+             name: cloudWatchAccessInstanceProfile.name,
+         },
+         imageId: AMI_ID,
+         // instanceInitiatedShutdownBehavior: "terminate",
+         // instanceMarketOptions: {
+         //     marketType: "spot",
+         // },
          instanceType: instanceType,
-         vpcSecurityGroupIds: [applicationSecurityGroup.id],
-         subnetId: publicSubnets[0], // Choose a public subnet for your instance
-         disableApiTermination : disableApiTermination,
-         rootBlockDevice: {
-            volumeSize: rootVolumeSize,
-            volumeType: rootVolumeType,
-            deleteOnTermination: deleteOnTermination,
-         },
+         // kernelId: "test",
          keyName: ec2_key_pair,
-         iamInstanceProfile: cloudWatchAccessInstanceProfile.name,
-
-         userData:pulumi.interpolate`#!/bin/bash
-
-         # Update the .env file with rds host value, user, pass, and db name
-         sed -i 's/HOST=.*/HOST=${rds_instance.address}/' ${WEBAPP_PATH}/.env
-         # Update the .env file with rds db name value
-         sed -i 's/DB=.*/DB=${db_name}/' ${WEBAPP_PATH}/.env
-         # Update the .env file with rds username value
-         sed -i 's/DB_USERNAME=.*/DB_USERNAME=${db_username}/' ${WEBAPP_PATH}/.env
-         # Update the .env file with rds password value
-         sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=${db_password}/' ${WEBAPP_PATH}/.env
-
-         # Change the ownership of the .env file to a specific user and group
-         sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
-         # Change the permissions of the .env file
-         sudo chmod 755 ${WEBAPP_PATH}/.env
-
-         # Execute cloudwatch agent with config file provisioned in known location through AMI
-         sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-            -a fetch-config \
-            -m ec2 \
-            -c file:/opt/csye6225/webapp/cloudwatch-config.json \
-            -s
-
-         `,
-
-         userDataReplaceOnChange: true,
-
-         tags: {
-            Name: webapp_ec2_tag,
+         // licenseSpecifications: [{
+         //     licenseConfigurationArn: "arn:aws:license-manager:eu-west-1:123456789012:license-configuration:lic-0123456789abcdef0123456789abcdef",
+         // }],
+         // metadataOptions: {
+         //     httpEndpoint: "enabled",
+         //     httpTokens: "required",
+         //     httpPutResponseHopLimit: 1,
+         //     instanceMetadataTags: "enabled",
+         // },
+         monitoring: {
+             enabled: true,
          },
-      },{ dependsOn: [rds_instance] });
+         networkInterfaces: [{
+             associatePublicIpAddress: "true",
+             securityGroups: [applicationSecurityGroup.id]
+         }],
+         // placement: {
+         //     availabilityZone: "us-west-2a",
+         // },
+         // ramDiskId: "test",
 
-      const hostedZoneId = defaultNamespaceConfig.require('HOSTED_ZONE_ID'); // Replace with your hosted zone ID
-      const subdomain = defaultNamespaceConfig.require('SUBDOMAIN'); // Replace with the subdomain you want to update
-      const recordName = defaultNamespaceConfig.require('A_RECORD_TAG');
-      const A_RECORD_TTL = defaultNamespaceConfig.getNumber('A_RECORD_TTL')
+         // tagSpecifications: [{
+         //     resourceType: "instance",
+         //     tags: {
+         //         Name: "test",
+         //     },
+         // }],
+         
+         userData: pulumi.output(userDataScript).apply(script => {
+            const encoded = Buffer.from(script).toString('base64');
+            console.log(`Encoded UserData: ${encoded}`);
+            const decoded = Buffer.from(encoded, 'base64').toString();
+            console.log('Decoded : ', decoded)
+            return encoded;
+        }),
+         tags: {
+            Name: WEBAPP_LAUNCH_TEMPLATE_TAG
+         },
+     });
+      // --------------------------- END OF LAUNCH TEMPLATE -----------------------------------------------------------
+
+      // --------------------------- START OF LOAD BALANCER -----------------------------------------------------------
       
-      console.log(hostedZoneId)
-      // Create an A record for the subdomain
-      const aRecord = new aws.route53.Record(recordName, {
-         name: subdomain,
-         zoneId: hostedZoneId,
-         type: 'A',
-         ttl: A_RECORD_TTL, 
-         records: [ec2.publicIp], 
+      // Load balancer conf vars
+      const LOAD_BALANCER_TYPE = defaultNamespaceConfig.require('LOAD_BALANCER_TYPE');
+      const LOAD_BALANCER_IS_INTERNAL = defaultNamespaceConfig.require('LOAD_BALANCER_IS_INTERNAL')
+      const LOAD_BALANCER_IS_DELETE_PROTECTION_ENABLED = defaultNamespaceConfig.require('LOAD_BALANCER_IS_DELETE_PROTECTION_ENABLED');
+
+      const application_load_balancer = new aws.lb.LoadBalancer("app-load-balancer", {
+         internal: LOAD_BALANCER_IS_INTERNAL,
+         loadBalancerType: LOAD_BALANCER_TYPE,
+         securityGroups: [loadbalancerSecurityGroup.id],
+         subnets: publicSubnets,
+         enableDeletionProtection: LOAD_BALANCER_IS_DELETE_PROTECTION_ENABLED,
+         tags: {
+             Name: "app-load-balancer",
+         },
+     });
+
+     // Target group conf vars
+      const APP_PORT = defaultNamespaceConfig.getNumber('APP_PORT');
+      const TARGET_GROUP_PROTOCOL = defaultNamespaceConfig.require('TARGET_GROUP_PROTOCOL');
+      const TARGET_GROUP_TYPE = defaultNamespaceConfig.require('TARGET_GROUP_TYPE');
+      const TARGET_GROUP_IP_ADDRESS_TYPE = defaultNamespaceConfig.require('TARGET_GROUP_IP_ADDRESS_TYPE');
+      const TARGET_GROUP_PROTOCOL_VERSION = defaultNamespaceConfig.require('TARGET_GROUP_PROTOCOL_VERSION');
+      const HEALTH_CHECK_SUCCESS_CODE = defaultNamespaceConfig.require('HEALTH_CHECK_SUCCESS_CODE');
+      const HEALTH_CHECK_HEALTHY_THRESHOLD = defaultNamespaceConfig.getNumber('HEALTH_CHECK_HEALTHY_THRESHOLD')
+      const HEALTH_CHECK_UNHEALTHY_THRESHOLD = defaultNamespaceConfig.getNumber('HEALTH_CHECK_UNHEALTHY_THRESHOLD')
+      const HEALTH_CHECK_INTERVAL = defaultNamespaceConfig.getNumber('HEALTH_CHECK_INTERVAL')
+      const HEALTH_CHECK_TIMEOUT = defaultNamespaceConfig.getNumber('HEALTH_CHECK_TIMEOUT')
+      const HEALTH_CHECK_PATH = defaultNamespaceConfig.require('HEALTH_CHECK_PATH');
+      const HEALTH_CHECK_PORT = defaultNamespaceConfig.require('HEALTH_CHECK_PORT');
+      const HEALTH_CHECK_PROTOCOL = defaultNamespaceConfig.require('HEALTH_CHECK_PROTOCOL')
+
+      // Target Group
+      const targetGroup = new aws.lb.TargetGroup("lb-target-group", {
+         port: APP_PORT, // Specify the port for the target group
+         protocol: TARGET_GROUP_PROTOCOL, // Specify the protocol (e.g., "HTTP", "HTTPS")
+         targetType: TARGET_GROUP_TYPE, 
+         ipAddressType: TARGET_GROUP_IP_ADDRESS_TYPE,
+         vpcId: vpc.id,
+         protocolVersion: TARGET_GROUP_PROTOCOL_VERSION,
+         healthCheck: {
+             path: HEALTH_CHECK_PATH, // Specify the health check path
+             port: HEALTH_CHECK_PORT, // Use "traffic-port" to match the target group port which is also app port in my case
+             protocol: HEALTH_CHECK_PROTOCOL, // Specify the health check protocol
+             healthyThreshold: HEALTH_CHECK_HEALTHY_THRESHOLD,
+             unhealthyThreshold: HEALTH_CHECK_UNHEALTHY_THRESHOLD,
+     
+             matcher: HEALTH_CHECK_SUCCESS_CODE,
+             interval: HEALTH_CHECK_INTERVAL,
+             timeout: HEALTH_CHECK_TIMEOUT,
+         },
+         tags: {
+            Name: "lb-target-group",
+        }
+      })
+
+      //lb listener conf vars:
+      const LB_LISTENER_PORT = defaultNamespaceConfig.getNumber('LB_LISTENER_PORT');
+      const LB_LISTENER_PROTOCOL = defaultNamespaceConfig.require('LB_LISTENER_PROTOCOL');
+      const LB_LISTENER_ACTION_TYPE = defaultNamespaceConfig.require('LB_LISTENER_ACTION_TYPE');
+
+      // lb listener
+      const application_loadbalancer_listener = new aws.lb.Listener("app-lb-listener", {
+         loadBalancerArn: application_load_balancer.arn,
+         port: LB_LISTENER_PORT,
+         protocol: LB_LISTENER_PROTOCOL,
+       
+         
+         defaultActions: [{
+             type: LB_LISTENER_ACTION_TYPE,
+             targetGroupArn: targetGroup.arn,
+         }],
+     });
+
+      // --------------------------- END OF LOAD BALANCER -----------------------------------------------------------
+
+
+      // ----------------------------AUTOSCALER -----------------------------------------------------------
+      /*
+      DESIRED_CAPACITY: 1
+  MIN_SIZE: 1
+  MAX_SIZE: 3
+  COOLDOWN: 60
+  HEALTH_CHECK_GRACE_PERIOD: 100
+   */
+      const DESIRED_CAPACITY = defaultNamespaceConfig.getNumber('DESIRED_CAPACITY')
+      const MIN_SIZE = defaultNamespaceConfig.getNumber('MIN_SIZE');
+      const MAX_SIZE = defaultNamespaceConfig.getNumber('MAX_SIZE')
+      const COOLDOWN = defaultNamespaceConfig.getNumber('COOLDOWN')
+      const HEALTH_CHECK_GRACE_PERIOD = defaultNamespaceConfig.getNumber('HEALTH_CHECK_GRACE_PERIOD')
+
+      const autoscalingGroup = new aws.autoscaling.Group("autoscaling-group", {
+         vpcZoneIdentifiers: publicSubnets,
+         targetGroupArns: [targetGroup.arn],
+         desiredCapacity: DESIRED_CAPACITY,
+         maxSize: MAX_SIZE,
+         minSize: MIN_SIZE,
+         defaultCooldown: COOLDOWN,
+         healthCheckGracePeriod: HEALTH_CHECK_GRACE_PERIOD, 
+         healthCheckType: "ELB",
+         mixedInstancesPolicy: {
+             launchTemplate: {
+                 launchTemplateSpecification: {
+                     launchTemplateId: launch_template.id,
+                 },
+             },
+         },
+         tags: [{
+            key: "Name",
+            value: "autoscaling-group-instance",
+            propagateAtLaunch: true,
+        }],
       });
 
+      const scaleUpPolicy = new aws.autoscaling.Policy('scaleUpPolicy', {
+         adjustmentType: 'ChangeInCapacity',
+         policyType: 'StepScaling',
+         // Increment by 1
+         stepAdjustments: [{scalingAdjustment: 1,
+            metricIntervalLowerBound: "0",
+            }],
+         autoscalingGroupName: autoscalingGroup.name,
+     });
+     
+     const scaleDownPolicy = new aws.autoscaling.Policy('scaleDownPolicy', {
+         adjustmentType: 'ChangeInCapacity',
+         policyType: 'StepScaling',
+         // Decrement by 1
+         stepAdjustments: [{scalingAdjustment: -1,
+      
+         metricIntervalUpperBound: "0"}],
+         autoscalingGroupName: autoscalingGroup.name,
+     });
+     
+     // Create CloudWatch metric alarms
+     // Scale up when CPU usage is above 5%
+
+     /*CPU_HIGH_ALARM_STATISTIC: 'Average'
+  CPU_HIGH_ALARM_PERIOD: '60'
+  CPU_HIGH_ALARM_THRESHOLD: '5'
+  CPU_HIGH_ALARM_EVALUATION_PERIOD: '1'
+  CPU_HIGH_ALARM_COMPARISON_OPERATOR: 'GreaterThanThreshold' */
+
+     const CPU_HIGH_ALARM_STATISTIC = defaultNamespaceConfig.require('CPU_HIGH_ALARM_STATISTIC')
+     const CPU_HIGH_ALARM_PERIOD = defaultNamespaceConfig.require('CPU_HIGH_ALARM_PERIOD')
+     const CPU_HIGH_ALARM_THRESHOLD = defaultNamespaceConfig.require('CPU_HIGH_ALARM_THRESHOLD')
+     const CPU_HIGH_ALARM_EVALUATION_PERIOD = defaultNamespaceConfig.require('CPU_HIGH_ALARM_EVALUATION_PERIOD')
+     const CPU_HIGH_ALARM_COMPARISON_OPERATOR = defaultNamespaceConfig.require('CPU_HIGH_ALARM_COMPARISON_OPERATOR')
+
+     const cpuHighAlarm = new aws.cloudwatch.MetricAlarm('cpuHighAlarm', {
+         alarmActions: [scaleUpPolicy.arn],
+         metricName: 'CPUUtilization',
+         namespace: 'AWS/EC2',
+         statistic: CPU_HIGH_ALARM_STATISTIC,
+         period: CPU_HIGH_ALARM_PERIOD,
+         evaluationPeriods: CPU_HIGH_ALARM_EVALUATION_PERIOD,
+         comparisonOperator: CPU_HIGH_ALARM_COMPARISON_OPERATOR,
+         threshold: CPU_HIGH_ALARM_THRESHOLD,
+         dimensions: {
+             AutoScalingGroupName: autoscalingGroup.name,
+         },
+     });
+     
+     const CPU_LOW_ALARM_STATISTIC = defaultNamespaceConfig.require('CPU_LOW_ALARM_STATISTIC')
+     const CPU_LOW_ALARM_PERIOD = defaultNamespaceConfig.require('CPU_LOW_ALARM_PERIOD')
+     const CPU_LOW_ALARM_THRESHOLD = defaultNamespaceConfig.require('CPU_LOW_ALARM_THRESHOLD')
+     const CPU_LOW_ALARM_EVALUATION_PERIOD = defaultNamespaceConfig.require('CPU_LOW_ALARM_EVALUATION_PERIOD')
+     const CPU_LOW_ALARM_COMPARISON_OPERATOR = defaultNamespaceConfig.require('CPU_LOW_ALARM_COMPARISON_OPERATOR')
+
+     // Scale down when CPU usage is below 3%
+     const cpuLowAlarm = new aws.cloudwatch.MetricAlarm('cpuLowAlarm', {
+         alarmActions: [scaleDownPolicy.arn],
+         metricName: 'CPUUtilization',
+         namespace: 'AWS/EC2',
+         statistic: CPU_LOW_ALARM_STATISTIC,
+         period: CPU_LOW_ALARM_PERIOD,
+         evaluationPeriods: CPU_LOW_ALARM_EVALUATION_PERIOD,
+         comparisonOperator: CPU_LOW_ALARM_COMPARISON_OPERATOR,
+         threshold: CPU_LOW_ALARM_THRESHOLD,
+         dimensions: {
+             AutoScalingGroupName: autoscalingGroup.name,
+         },
+     });
+  
+      // ----------------------------END OF AUTOSCALER----------------------------------------------------------------
+
+      // --------------------------- ROUTE 53 -----------------------------------------------------
+
+      const SUBDOMAIN_HOSTED_ZONE_ID = defaultNamespaceConfig.require('SUBDOMAIN_HOSTED_ZONE_ID'); // Replace with your hosted zone ID
+      const SUBDOMAIN_NAME = defaultNamespaceConfig.require('SUBDOMAIN_NAME'); // Replace with the subdomain you want to update
+      const RECORD_NAME = defaultNamespaceConfig.require('RECORD_TAG');
+      const RECORD_TTL = defaultNamespaceConfig.getNumber('RECORD_TTL')
+      
+      // console.log(hostedZoneId)
+      // Create an CNAME record for the subdomain
+      const aRecord = new aws.route53.Record(RECORD_NAME, {
+         name: SUBDOMAIN_NAME,
+         type: "A",
+         zoneId: SUBDOMAIN_HOSTED_ZONE_ID,
+         // ttl: RECORD_TTL, 
+         aliases: [
+            {
+                name: application_load_balancer.dnsName,
+                zoneId: application_load_balancer.zoneId,   // This is the hosted zone ID of the ELB, available in AWS console
+                evaluateTargetHealth: true,
+            },
+        ],
+      });
+
+      // --------------------------------- END OF ROUTE 53 -----------------------------------------
       
    }
+
 }
 
 
