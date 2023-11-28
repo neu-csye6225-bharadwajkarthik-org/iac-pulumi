@@ -1,11 +1,13 @@
 "use strict";
 const pulumi = require("@pulumi/pulumi");
 const aws = require("@pulumi/aws");
+const gcp = require("@pulumi/gcp");
 // const cloud = require("@pulumi/cloud");
 const {CIDRBlockProvider} = require('./helpers');
 
 const defaultNamespaceConfig = new pulumi.Config();
 const awsNamespaceConfig = new pulumi.Config("aws");
+const gcpNamespaceConfig = new pulumi.Config("gcp");
 
 // Extract user input variables from config default namespace
 const vpcCount = defaultNamespaceConfig.getNumber('vpcCount');
@@ -211,10 +213,20 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
 
       // --------------------------END OF APPLICATION SECURITY GROUP --------------------------------------------------
 
-      
+      // ------------------------- SNS TOPIC CREATION ----------------------------------------------------------
+      const snsSubmissionTopic = new aws.sns.Topic("snsSubmissionTopic", {
+          displayName: "snsSubmissionTopic",
+          tags: {
+            Name: "snsSubmissionTopic", 
+        },
+      });
+
+      // ------------------------- END OF SNS TOPIC CREATION ---------------------------------------------------
+
+      // ------------------------- INSTANCE PROFILE FOR CLOUDWATCH AND SNS ACCESS ---------------------------------
       // Create an IAM role with for EC2 to assume
-      const cloudwatchAccessRole = new aws.iam.Role('EC2CloudwatchAccess', {
-         name: 'EC2CloudwatchAccess', // Specify a custom name for the IAM role
+      const cloudwatchAndSNSAccessRole = new aws.iam.Role('EC2CloudwatchAndSNSAccessRole', {
+         name: 'EC2CloudwatchAndSNSAccessRole', // Specify a custom name for the IAM role
          assumeRolePolicy: JSON.stringify({
             Version: '2012-10-17',
             Statement: [
@@ -228,21 +240,202 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
             ],
          }),
          tags: {
-            roleName: 'EC2CloudwatchAccess'
+            roleName: 'EC2CloudwatchAndSNSAccessRole'
          } 
       });
 
-      // Attach - 'CloudWatchServerAgentPolicy'-  IAM policy to the custom - 'cloudwatchAccessRole' - IAM role created above
-      const policyAttachment = new aws.iam.PolicyAttachment('cloudwatch-agent-policy-attachment', {
-         roles: [cloudwatchAccessRole.name],
+      // Attach - 'CloudWatchServerAgentPolicy'-  IAM policy to the custom - 'EC2CloudwatchAndSNSAccessRole' - IAM role created above
+      const cloudwatchAgentPolicyAttachment = new aws.iam.PolicyAttachment('cloudwatch-agent-policy-attachment', {
+         roles: [cloudwatchAndSNSAccessRole.name],
          policyArn: 'arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy',
       }); 
 
+      // Create SNS publish policy
+      const snsPublishPolicy = snsSubmissionTopic.arn.apply(publicPolicyArn => 
+         new aws.iam.Policy("snsPublishPolicy", {
+            policy: JSON.stringify({
+               Version: "2012-10-17",
+               Statement: [{
+                     Effect: "Allow",
+                     Action: "sns:Publish", 
+                     Resource: publicPolicyArn, //"arn:aws:sns:*:*:*", 
+               }],
+            }),
+         })
+      );
+
+      // Attach SNS-publish policy to the existing role
+      const snsPublishPolicyAttachment = new aws.iam.PolicyAttachment('sns-server-policy-attachment', {
+         roles: [cloudwatchAndSNSAccessRole.name],
+         policyArn: snsPublishPolicy.arn,
+         tags:{
+            Name: 'AssignmentSubmissionTopic'
+         }
+      }); 
+
       // Create an instance profile for this role
-      const cloudWatchAccessInstanceProfile = new aws.iam.InstanceProfile('EC2CloudwatchAccessInstanceProfile', {
-         name: 'EC2CloudwatchAccessInstanceProfile', 
-         role: cloudwatchAccessRole.name, // Associate the IAM role with the instance profile
+      const cloudWatchAccessInstanceProfile = new aws.iam.InstanceProfile('EC2CloudwatchAndSNSAccessInstanceProfile', {
+         name: 'EC2CloudwatchAndSNSAccessInstanceProfile', 
+         role: cloudwatchAndSNSAccessRole.name, // Associate the IAM role with the instance profile
       });
+
+      // ------------------------------ END OF INSTANCE PROFILE FOR CLOUDWATCH AND SNS ACCESS ----------------------------------------------
+
+      // ------------------------------ START OF DYNAMODB -------------------------------------------------------
+
+      // Create a DynamoDB Table
+      const dynamoTable = new aws.dynamodb.Table("EmailsDeliveredTable", {
+         // Define table attributes
+         attributes: [
+            { name: "id", type: "S" }, // String attribute (S)
+         ],
+         // Define primary key
+         hashKey: "id",
+         // Define provisioned throughput
+         readCapacity: 5,
+         writeCapacity: 5,
+         tags: {
+            Name: "EmailsDeliveredTable",
+        },
+      });
+      dynamoTable.arn.apply((arn) => console.log(`dynamoTable.arn  = ` + arn +", name = ", arn.split('/').slice(-1)[0]));
+      // const tableName = pulumi.interpolate`${dynamoTable.arn}`.apply(arn => arn.split('/').slice(-1)[0]);
+      // console.log('tableName = ', tableName)
+      // IAM role policy that allows 'PutItem' on the above DynamoDB table
+      // Create PutItem Policy
+      const dynamoDBPutItemPolicy = new aws.iam.Policy("dynamoDBPutItemPolicy", {
+         policy: pulumi.output({
+            Version: "2012-10-17",
+            Statement: [{
+               Action: "dynamodb:PutItem",
+               Effect: "Allow",
+               Resource: dynamoTable.arn
+            }],
+         }).apply(JSON.stringify),
+      });
+ 
+      // ------------------------------ END OF DYNAMODB ----------------------------------------------------------
+
+      // ----------------------------- START OF GCS Bucket ------------------------------------------------------
+      
+      // Create a GCP service account
+      const serviceAccount = new gcp.serviceaccount.Account("gcp-lambda", {
+         accountId: "gcp-lambda",
+         displayName: "GCP Lambda Service Account",
+      });
+
+      // Create access keys for the service account
+      const serviceAccountKey = new gcp.serviceaccount.Key("gcp-lambda-key", {
+         serviceAccountId: serviceAccount.accountId,
+      });
+
+      const projectId = gcpNamespaceConfig.require('project')
+      // Create an IAM role giving ObjectCreator permission to the service account
+      const serviceAccountObjectCreatorRoleBinding = new gcp.projects.IAMBinding("serviceAccountObjectCreatorRoleBinding", {
+         role: "roles/storage.objectCreator",
+         members: [serviceAccount.email.apply(email => "serviceAccount:" + email)],
+         project: projectId
+      });
+
+      // Create a GCS bucket
+      const bucket = new gcp.storage.Bucket("submissions-bucket", {
+         location: "US",
+         forceDestroy: true, // Allows Pulumi to delete the bucket (use carefully)
+         publicAccessPrevention: "enforced" // deny public access to bucket with sensitive submission info
+      });
+
+      // ----------------------------- END OF GCS Bucket --------------------------------------------------------
+
+      // ------------------------------ START OF LAMBDA FUNCTION ----------------------------------------------------
+
+      // Create an IAM role for the Lambda function
+      let lambdaRole = new aws.iam.Role('lambdaRole', {
+         assumeRolePolicy: JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [
+               {
+                     Action: 'sts:AssumeRole',
+                     Effect: 'Allow',
+                     Principal: {
+                        Service: 'lambda.amazonaws.com'
+                     }
+               }
+            ]
+         })
+      });
+
+      // Attach the cloud watch logs policy to the Lambda role
+      new aws.iam.PolicyAttachment("lambdaLogs", {
+         roles: [lambdaRole.name],
+         policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole
+      });
+
+      // Define policy for read access from Secrets Manager
+      let secretsReadPolicy = new aws.iam.Policy("secretsReadPolicy", {
+         policy: JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [
+               {
+                     Effect: "Allow",
+                     Action: "secretsmanager:GetSecretValue",
+                     Resource: "*"
+               }
+            ]
+         })
+      });
+
+      // Attach the Secrets Manager policy to the Lambda role
+      new aws.iam.PolicyAttachment("lambdaSecrets", {
+         roles: [lambdaRole.name],
+         policyArn: secretsReadPolicy.arn
+      });
+
+      // Attach the DynamoDB PutItem policy to the Lambda role
+      new aws.iam.PolicyAttachment("lambdaDynamoDBPut", {
+         roles: [lambdaRole.name],
+         policyArn: dynamoDBPutItemPolicy.arn
+      });
+
+      const DYNAMO_TABLE_NAME = pulumi.interpolate`${dynamoTable.arn}`.apply(arn => arn.split('/').slice(-1)[0]);
+
+      // Create Lambda function using a local deployment file
+      const DEPLOYMENT_ZIP_PATH = defaultNamespaceConfig.require('DEPLOYMENT_ZIP_PATH');
+      const lambdaFunction = new aws.lambda.Function("handleSubmissionAndSendEmail", {
+         code: new pulumi.asset.AssetArchive({
+            ".": new pulumi.asset.FileArchive(DEPLOYMENT_ZIP_PATH),
+         }),
+         role: lambdaRole.arn,
+         handler: "index.handler", // the handler function inside index.js 
+         runtime: aws.lambda.Runtime.NodeJS18dX, 
+         tags: {
+            Name: "handleSubmissionAndSendEmail",
+        },
+         environment: {
+            variables: {
+               DYNAMO_TABLE_NAME: DYNAMO_TABLE_NAME,
+               GCS_BUCKET_NAME: bucket.name,
+               GCP_SERVICE_ACCOUNT_KEY: serviceAccountKey.privateKey,
+               REGION_AWS: region
+            },
+         },
+         timeout: 60,
+      });
+
+      const lambdaTriggerFromSnsPermission = new aws.lambda.Permission("lambdaTriggerFromSnsPermission", {
+         action: "lambda:InvokeFunction",
+         function: lambdaFunction.name,
+         principal: "sns.amazonaws.com",
+         sourceArn: snsSubmissionTopic.arn, 
+     });
+     
+     const snsSubmissionTopicSubscription = new aws.sns.TopicSubscription("snsSubmissionTopicSubscription", {
+         endpoint: lambdaFunction.arn,
+         protocol: "lambda",
+         topic: snsSubmissionTopic.arn, 
+     });
+
+      // ------------------------------ END OF LAMBDA FUNCTION ----------------------------------------------------
+
 
       const database_security_group_tag = defaultNamespaceConfig.require('DATABASE_SECURITY_GROUP_TAG');
       const database_ingress_protocol = defaultNamespaceConfig.require('DATABASE_INGRESS_PROTOCOL');
@@ -278,7 +471,7 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       const rds_subnet_group_tag = defaultNamespaceConfig.require('RDS_SUBNET_GROUP_TAG');
       const rds_subnet_group = new aws.rds.SubnetGroup(rds_subnet_group_tag, {
          subnetIds: [
-             privateSubnets[0], // need to make private after dev
+             privateSubnets[0], 
              privateSubnets[1]
          ],
          tags: {
@@ -325,70 +518,7 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
    
       const WEBAPP_PATH = defaultNamespaceConfig.require('WEBAPP_PATH');
 
-      // const webapp_ec2_tag = defaultNamespaceConfig.require('WEBAPP_EC2_TAG');   
-      // const AMI_ID = defaultNamespaceConfig.require('AMI_ID');
-      // const ec2_key_pair = defaultNamespaceConfig.require('EC2_KEY_PAIR');
-      // const disableApiTermination = defaultNamespaceConfig.require('DISABLE_API_TERMINATION');
-      // const deleteOnTermination = defaultNamespaceConfig.require('DELETE_ON_TERMINATION');
-      // const rootVolumeSize = defaultNamespaceConfig.getNumber('ROOT_VOLUME_SIZE');
-      // const rootVolumeType = defaultNamespaceConfig.require('ROOT_VOLUME_TYPE');
-      // const instanceType = defaultNamespaceConfig.require('INSTANCE_TYPE');
-
-      // console.log('disableApiTermination = ', disableApiTermination);
-      // console.log('deleteOnTermination = ', deleteOnTermination);
-      // console.log('rootVolumeSize = ', rootVolumeSize);
-      // console.log('rootVolumeType = ', rootVolumeType);
-      // console.log('instanceType = ', instanceType);
-
-      // ------------------------------------ EC2 --------------------------------------------
-
-      // const ec2 = new aws.ec2.Instance(webapp_ec2_tag, {
-      //    ami: AMI_ID, // Replace with your desired AMI ID
-      //    instanceType: instanceType,
-      //    vpcSecurityGroupIds: [applicationSecurityGroup.id],
-      //    subnetId: publicSubnets[0], // Choose a public subnet for your instance
-      //    disableApiTermination : disableApiTermination,
-      //    rootBlockDevice: {
-      //       volumeSize: rootVolumeSize,
-      //       volumeType: rootVolumeType,
-      //       deleteOnTermination: deleteOnTermination,
-      //    },
-      //    keyName: ec2_key_pair,
-      //    iamInstanceProfile: cloudWatchAccessInstanceProfile.name,
-
-      //    userData:pulumi.interpolate`#!/bin/bash
-
-      //    # Update the .env file with rds host value, user, pass, and db name
-      //    sed -i 's/HOST=.*/HOST=${rds_instance.address}/' ${WEBAPP_PATH}/.env
-      //    # Update the .env file with rds db name value
-      //    sed -i 's/DB=.*/DB=${db_name}/' ${WEBAPP_PATH}/.env
-      //    # Update the .env file with rds username value
-      //    sed -i 's/DB_USERNAME=.*/DB_USERNAME=${db_username}/' ${WEBAPP_PATH}/.env
-      //    # Update the .env file with rds password value
-      //    sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=${db_password}/' ${WEBAPP_PATH}/.env
-
-      //    # Change the ownership of the .env file to a specific user and group
-      //    sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
-      //    # Change the permissions of the .env file
-      //    sudo chmod 755 ${WEBAPP_PATH}/.env
-
-      //    # Execute cloudwatch agent with config file provisioned in known location through AMI
-      //    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-      //       -a fetch-config \
-      //       -m ec2 \
-      //       -c file:/opt/csye6225/webapp/cloudwatch-config.json \
-      //       -s
-
-      //    `,
-
-      //    userDataReplaceOnChange: true,
-
-      //    tags: {
-      //       Name: webapp_ec2_tag,
-      //    },
-      // },{ dependsOn: [rds_instance] });
-
-      // ------------------------------------ END OF EC2 --------------------------------------------
+      
 
       // --------------------------- START OF LAUNCH TEMPLATE ---------------------------------------
 
@@ -416,6 +546,10 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       sed -i 's/DB_USERNAME=.*/DB_USERNAME=${db_username}/' ${WEBAPP_PATH}/.env
       # Update the .env file with rds password value
       sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=${db_password}/' ${WEBAPP_PATH}/.env
+      # Update the .env file with SNS TOPIC ARN
+      sed -i 's/SNS_TOPIC_ARN=.*/SNS_TOPIC_ARN=${snsSubmissionTopic.arn}/' ${WEBAPP_PATH}/.env
+      # Update the .env file with AWS REGION
+      sed -i 's/AWS_REGION=.*/AWS_REGION=${region}/' ${WEBAPP_PATH}/.env
 
       # Change the ownership of the .env file to a specific user and group
       sudo chown csye6225:csye6225 ${WEBAPP_PATH}/.env
@@ -440,44 +574,13 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
                deleteOnTermination: deleteOnTermination,
              },
          }],
-         // capacityReservationSpecification: {
-         //     capacityReservationPreference: "open",
-         // },
-         // cpuOptions: {
-         //     coreCount: 4,
-         //     threadsPerCore: 2,
-         // },
-         // creditSpecification: {
-         //     cpuCredits: "standard",
-         // },
          disableApiTermination: disableApiTermination,
-         // ebsOptimized: "true",
-         // elasticGpuSpecifications: [{
-         //     type: "test",
-         // }],
-         // elasticInferenceAccelerator: {
-         //     type: "eia1.medium",
-         // },
          iamInstanceProfile: {
              name: cloudWatchAccessInstanceProfile.name,
          },
          imageId: AMI_ID,
-         // instanceInitiatedShutdownBehavior: "terminate",
-         // instanceMarketOptions: {
-         //     marketType: "spot",
-         // },
          instanceType: instanceType,
-         // kernelId: "test",
          keyName: ec2_key_pair,
-         // licenseSpecifications: [{
-         //     licenseConfigurationArn: "arn:aws:license-manager:eu-west-1:123456789012:license-configuration:lic-0123456789abcdef0123456789abcdef",
-         // }],
-         // metadataOptions: {
-         //     httpEndpoint: "enabled",
-         //     httpTokens: "required",
-         //     httpPutResponseHopLimit: 1,
-         //     instanceMetadataTags: "enabled",
-         // },
          monitoring: {
              enabled: true,
          },
@@ -485,18 +588,6 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
              associatePublicIpAddress: "true",
              securityGroups: [applicationSecurityGroup.id]
          }],
-         // placement: {
-         //     availabilityZone: "us-west-2a",
-         // },
-         // ramDiskId: "test",
-
-         // tagSpecifications: [{
-         //     resourceType: "instance",
-         //     tags: {
-         //         Name: "test",
-         //     },
-         // }],
-         
          userData: pulumi.output(userDataScript).apply(script => {
             const encoded = Buffer.from(script).toString('base64');
             console.log(`Encoded UserData: ${encoded}`);
