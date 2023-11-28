@@ -4,6 +4,9 @@ config:
   aws:region: us-east-1
   aws:profile: dev
 
+# gcp config
+  gcp:project: csye6225-dev-406515
+
 # vpc,subnet config
   desiredTotalSubnetPairCount: 3
   vpcCount: 1
@@ -54,26 +57,17 @@ config:
   DATABASE_NAME: csye6225
   DATABASE_USERNAME: csye6225
   DATABASE_PASSWORD: password
+  
 
 # Launch Template config
   WEBAPP_LAUNCH_TEMPLATE_TAG: Webapp_Launch_Template
-  AMI_ID: ami-029dfc72ed5fa86ae
+  AMI_ID: ami-0fda86e55c9450c13
   EC2_KEY_PAIR: ec2-key-pair
   INSTANCE_TYPE: t2.micro
   DISABLE_API_TERMINATION: false
   DELETE_ON_TERMINATION: true
   ROOT_VOLUME_SIZE: 25
   ROOT_VOLUME_TYPE: gp2
-
-# # EC2 config
-#   WEBAPP_EC2_TAG: WebappEC2
-#   AMI_ID: ami-0bb0e525a47b946c6
-#   EC2_KEY_PAIR: ec2-key-pair
-#   INSTANCE_TYPE: t2.micro
-#   DISABLE_API_TERMINATION: false
-#   DELETE_ON_TERMINATION: true
-#   ROOT_VOLUME_SIZE: 25
-#   ROOT_VOLUME_TYPE: gp2
 
 # Load Balancer Config:
   LOAD_BALANCER_TYPE: "application"
@@ -102,7 +96,7 @@ config:
   MIN_SIZE: 1
   MAX_SIZE: 3
   COOLDOWN: 60
-  HEALTH_CHECK_GRACE_PERIOD: 200
+  HEALTH_CHECK_GRACE_PERIOD: 300
 
   CPU_HIGH_ALARM_STATISTIC: 'Average'
   CPU_HIGH_ALARM_PERIOD: '60'
@@ -125,3 +119,6 @@ config:
 # Applicaton config
   WEBAPP_PATH: /opt/csye6225/webapp
   APP_PORT: 8080
+
+# Serverless config
+  DEPLOYMENT_ZIP_PATH: "../../serverless/deployment.zip"
