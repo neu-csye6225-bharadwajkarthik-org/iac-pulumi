@@ -337,6 +337,12 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
          project: projectId
       });
 
+      const serviceAccountListObjectRoleBinding = new gcp.projects.IAMBinding("serviceAccountListObjectRoleBinding", {
+         role: "roles/storage.objectViewer", // The role you're applying (objectViewer grants list permissions)
+         members: [serviceAccount.email.apply(email => "serviceAccount:" + email)], // Replace with the service account email
+         project: projectId, // Replace with your GCP project ID
+     });
+
       // Create a GCS bucket
       const bucket = new gcp.storage.Bucket("submissions-bucket", {
          location: "US",
@@ -400,6 +406,9 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
 
       // Create Lambda function using a local deployment file
       const DEPLOYMENT_ZIP_PATH = defaultNamespaceConfig.require('DEPLOYMENT_ZIP_PATH');
+      // get email secret name 
+      const EMAIL_SECRET_NAME = defaultNamespaceConfig.require('EMAIL_SECRET_NAME');
+      const CC_EMAIL = defaultNamespaceConfig.require('CC_EMAIL')
       const lambdaFunction = new aws.lambda.Function("handleSubmissionAndSendEmail", {
          code: new pulumi.asset.AssetArchive({
             ".": new pulumi.asset.FileArchive(DEPLOYMENT_ZIP_PATH),
@@ -415,7 +424,9 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
                DYNAMO_TABLE_NAME: DYNAMO_TABLE_NAME,
                GCS_BUCKET_NAME: bucket.name,
                GCP_SERVICE_ACCOUNT_KEY: serviceAccountKey.privateKey,
-               REGION_AWS: region
+               REGION_AWS: region,
+               EMAIL_SECRET_NAME: EMAIL_SECRET_NAME,
+               CC_EMAIL: CC_EMAIL
             },
          },
          timeout: 60,

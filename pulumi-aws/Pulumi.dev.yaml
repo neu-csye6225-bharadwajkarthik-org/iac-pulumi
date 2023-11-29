@@ -61,7 +61,7 @@ config:
 
 # Launch Template config
   WEBAPP_LAUNCH_TEMPLATE_TAG: Webapp_Launch_Template
-  AMI_ID: ami-0fda86e55c9450c13
+  AMI_ID: ami-022f8d8a0795c1a4b
   EC2_KEY_PAIR: ec2-key-pair
   INSTANCE_TYPE: t2.micro
   DISABLE_API_TERMINATION: false
@@ -96,7 +96,7 @@ config:
   MIN_SIZE: 1
   MAX_SIZE: 3
   COOLDOWN: 60
-  HEALTH_CHECK_GRACE_PERIOD: 300
+  HEALTH_CHECK_GRACE_PERIOD: 400
 
   CPU_HIGH_ALARM_STATISTIC: 'Average'
   CPU_HIGH_ALARM_PERIOD: '60'
@@ -122,3 +122,7 @@ config:
 
 # Serverless config
   DEPLOYMENT_ZIP_PATH: "../../serverless/deployment.zip"
+
+# Email config
+  EMAIL_SECRET_NAME: webapp/email
+  CC_EMAIL: akbw1998@gmail.com
