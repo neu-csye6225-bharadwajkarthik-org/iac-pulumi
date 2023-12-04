@@ -673,6 +673,7 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
       const LB_LISTENER_PORT = defaultNamespaceConfig.getNumber('LB_LISTENER_PORT');
       const LB_LISTENER_PROTOCOL = defaultNamespaceConfig.require('LB_LISTENER_PROTOCOL');
       const LB_LISTENER_ACTION_TYPE = defaultNamespaceConfig.require('LB_LISTENER_ACTION_TYPE');
+      const SSL_CERTIFICATE_ARN = defaultNamespaceConfig.require('SSL_CERTIFICATE_ARN')
 
       // lb listener
       const application_loadbalancer_listener = new aws.lb.Listener("app-lb-listener", {
@@ -680,7 +681,8 @@ const provisionResources = async(availabilityZones, totalSubnetCount) => {
          port: LB_LISTENER_PORT,
          protocol: LB_LISTENER_PROTOCOL,
        
-         
+         sslPolicy: "ELBSecurityPolicy-2016-08", // SSL Policy
+         certificateArn: SSL_CERTIFICATE_ARN,
          defaultActions: [{
              type: LB_LISTENER_ACTION_TYPE,
              targetGroupArn: targetGroup.arn,

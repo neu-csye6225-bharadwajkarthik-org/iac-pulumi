@@ -126,3 +126,6 @@ config:
 # Email config
   EMAIL_SECRET_NAME: webapp/email
   CC_EMAIL: akbw1998@gmail.com
+
+# SSL
+  SSL_CERTIFICATE_ARN: arn:aws:acm:us-east-1:715971441311:certificate/dba51fe0-a718-49e5-813a-6aa642ada9c4
